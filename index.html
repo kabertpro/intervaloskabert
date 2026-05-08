@@ -2169,6 +2169,15 @@ function showAuthError(msg) {
   el.classList.toggle('show', !!msg);
 }
 
+// Muestra/oculta estado de carga en botones de auth
+function setAuthLoading(loading) {
+  const btns = document.querySelectorAll('.auth-btn');
+  btns.forEach(b => {
+    b.disabled = loading;
+    b.textContent = loading ? 'Cargando...' : b.dataset.label || b.textContent;
+  });
+}
+
 function handleAuthBtn() {
   if (currentUser && !currentUser.isGuest) {
     doLogout();
@@ -2315,9 +2324,9 @@ function updateProfileUI() {
 }
 
 function goToModes() {
+  // Si no hay usuario, iniciar como invitado automáticamente
   if (!currentUser) {
-    showScreen('screen-auth');
-    return;
+    playAsGuest();
   }
   showScreen('screen-modes');
 }
@@ -2638,38 +2647,68 @@ function endGame() {
   gameState.active = false;
   clearTimer();
 
-  const score = gameState.score;
+  const score    = gameState.score;
   const accuracy = gameState.answered > 0
     ? Math.round((gameState.correct / gameState.answered) * 100) : 0;
 
-  // Guardar progreso
   let isRecord = false;
+
   if (currentUser) {
-    if (score > (currentUser.bestScore || 0)) {
+    // ── Actualizar stats en memoria ──
+    const prevBest = currentUser.bestScore || 0;
+    if (score > prevBest) {
       currentUser.bestScore = score;
       isRecord = true;
     }
-    currentUser.totalGames = (currentUser.totalGames || 0) + 1;
-    currentUser.totalCorrect = (currentUser.totalCorrect || 0) + gameState.correct;
-    currentUser.totalAnswers = (currentUser.totalAnswers || 0) + gameState.answered;
+    currentUser.totalGames    = (currentUser.totalGames    || 0) + 1;
+    currentUser.totalCorrect  = (currentUser.totalCorrect  || 0) + gameState.correct;
+    currentUser.totalAnswers  = (currentUser.totalAnswers  || 0) + gameState.answered;
     if (gameState.bestStreak > (currentUser.bestStreak || 0))
       currentUser.bestStreak = gameState.bestStreak;
 
     const xpGained = Math.floor(score / 10) + gameState.correct * 5;
     addXP(xpGained);
     checkAchievements();
-    saveUserProgress();
-    addScore(score, currentMode);
+
+    if (currentUser.isGuest) {
+      // Invitado: guardar récord solo en localStorage del dispositivo
+      const guestData = lsLoad('im_guest') || { bestScore: 0, totalGames: 0 };
+      if (score > (guestData.bestScore || 0)) guestData.bestScore = score;
+      guestData.totalGames = (guestData.totalGames || 0) + 1;
+      lsSave('im_guest', guestData);
+
+      // Guardar puntaje en leaderboard local
+      const db = lsLoad('im_db') || { scores: [] };
+      if (!db.scores) db.scores = [];
+      db.scores.push({
+        username: 'Invitado',
+        score, mode: currentMode,
+        date: Date.now(),
+        level: 1, accuracy,
+        streak: gameState.bestStreak,
+      });
+      if (db.scores.length > 200) db.scores = db.scores.slice(-200);
+      lsSave('im_db', db);
+    } else {
+      // Usuario registrado: guardar en Firebase (o localStorage)
+      saveUserProgress();
+      addScore(score, currentMode);
+    }
   }
 
-  // UI resultados
-  const titles = { classic:'¡Ejercicio Completo!', blitz:'¡Tiempo!', challenge:'¡Desafío Superado!', training:'¡Entrenamiento!' };
-  document.getElementById('results-title').textContent = titles[currentMode] || '¡Fin!';
+  // ── Pantalla de resultados ──
+  const titles = {
+    classic: '¡Ejercicio Completo!',
+    blitz:   '⚡ ¡Tiempo!',
+    challenge:'🔥 ¡Desafío!',
+    training: '📚 Entrenamiento',
+  };
+  document.getElementById('results-title').textContent    = titles[currentMode] || '¡Fin!';
   document.getElementById('results-score-val').textContent = score;
-  document.getElementById('res-correct').textContent = gameState.correct;
-  document.getElementById('res-accuracy').textContent = accuracy + '%';
-  document.getElementById('res-streak').textContent = gameState.bestStreak;
-  document.getElementById('results-record').classList.toggle('show', isRecord);
+  document.getElementById('res-correct').textContent      = gameState.correct;
+  document.getElementById('res-accuracy').textContent     = accuracy + '%';
+  document.getElementById('res-streak').textContent       = gameState.bestStreak;
+  document.getElementById('results-record').classList.toggle('show', isRecord && score > 0);
 
   showScreen('screen-results');
   if (score > 0) spawnParticles();
@@ -2774,33 +2813,51 @@ function toast(msg, ms = 2500) {
 /* ══════════════════════════════════
    PANTALLA DE CARGA
 ══════════════════════════════════ */
-function bootSequence() {
+async function bootSequence() {
   const bar = document.getElementById('loading-bar');
-  let pct = 0;
 
-  // Cargar sesión
-  loadSession();
+  // Paso 1 — inicializar Firebase
+  bar.style.width = '20%';
+  initFirebase();
 
-  // Simular carga
-  const steps = [
-    [300,  30,  'Cargando motor musical...'],
-    [800,  60,  'Inicializando audio...'],
-    [1200, 85,  'Preparando intervalos...'],
-    [1600, 100, 'Listo'],
-  ];
+  // Paso 2 — restaurar sesión (async, esperar resultado)
+  setTimeout(() => { bar.style.width = '50%'; }, 300);
+  const sessionRestored = await loadSession();
 
-  steps.forEach(([delay, p]) => {
-    setTimeout(() => { bar.style.width = p + '%'; }, delay);
-  });
+  setTimeout(() => { bar.style.width = '80%'; }, 700);
+  await new Promise(r => setTimeout(r, 400));
 
-  setTimeout(() => {
-    showScreen('screen-menu');
-    updateMenuUI();
-  }, 2000);
+  bar.style.width = '100%';
+  await new Promise(r => setTimeout(r, 300));
+
+  showScreen('screen-menu');
+  updateMenuUI();
+
+  if (sessionRestored && currentUser) {
+    toast(`¡Bienvenido de nuevo, ${currentUser.username}! 🎵`);
+  }
 }
 
-// Arrancar
-bootSequence();
+// NO arrancar aquí — esperar a que Firebase cargue (ver scripts al final del body)
+</script>
+
+<!-- ══════════════ FIREBASE SDK ══════════════ -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+  // Firebase ya está disponible — inicializar y arrancar el juego
+  try {
+    fbApp = firebase.apps.length
+      ? firebase.apps[0]
+      : firebase.initializeApp(firebaseConfig);
+    fbDb = firebase.firestore();
+    console.log('✅ Firebase listo');
+  } catch(e) {
+    console.warn('⚠️ Firebase no disponible, modo offline:', e.message);
+    fbDb = null;
+  }
+  // Arrancar el juego
+  bootSequence();
 </script>
 </body>
 </html>
