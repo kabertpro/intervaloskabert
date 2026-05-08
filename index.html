@@ -1630,6 +1630,46 @@ html, body {
   </div>
 </div>
 
+<!-- ══════════════ MODAL JUGAR ══════════════ -->
+<div id="play-modal" style="
+  display:none; position:fixed; inset:0; z-index:200;
+  background:rgba(5,13,26,0.88); backdrop-filter:blur(12px);
+  align-items:center; justify-content:center;
+">
+  <div style="
+    background:var(--bg-panel); border:1px solid var(--border);
+    border-radius:20px; padding:32px 28px; width:90%; max-width:360px;
+    box-shadow:0 20px 60px rgba(0,0,0,0.6); text-align:center;
+  ">
+    <div style="font-size:2rem; margin-bottom:12px;">🎵</div>
+    <div style="font-family:var(--font-display);font-size:1.2rem;color:var(--gold);font-weight:700;letter-spacing:0.1em;margin-bottom:8px;">
+      ¿Cómo deseas jugar?
+    </div>
+    <div style="font-size:0.78rem;color:var(--dim);margin-bottom:24px;line-height:1.5;">
+      Inicia sesión para guardar tu progreso y aparecer en el ranking global.
+    </div>
+    <button onclick="closePlayModal();showScreen('screen-auth');" style="
+      width:100%; padding:14px; margin-bottom:10px;
+      background:linear-gradient(135deg,var(--gold),#b8892e);
+      border:none; border-radius:10px;
+      color:var(--bg-deep); font-family:var(--font-display);
+      font-size:0.88rem; font-weight:700; letter-spacing:0.12em;
+      cursor:pointer; text-transform:uppercase;
+    ">🔑 Iniciar sesión / Registrarse</button>
+    <button onclick="closePlayModal();playAsGuest();showScreen('screen-modes');" style="
+      width:100%; padding:12px;
+      background:transparent; border:1px solid var(--border);
+      border-radius:10px; color:var(--dim);
+      font-family:var(--font-ui); font-size:0.82rem;
+      font-weight:500; letter-spacing:0.08em; cursor:pointer;
+      transition:all 0.2s;
+    " onmouseover="this.style.color='var(--white)';this.style.borderColor='var(--border-glow)'"
+       onmouseout="this.style.color='var(--dim)';this.style.borderColor='var(--border)'">
+      Continuar como invitado
+    </button>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div id="toast"></div>
 
@@ -2026,7 +2066,9 @@ async function doRegister() {
       // ── Modo Firebase ──
       const snap = await usersCol().doc(username).get();
       if (snap.exists) { showAuthError('Ese nombre de usuario ya existe.'); setAuthLoading(false); return; }
+      // Guardar documento completo incluyendo pass
       await usersCol().doc(username).set(newUser);
+      console.log('✅ Usuario creado en Firebase:', username);
 
     } else {
       // ── Fallback localStorage ──
@@ -2113,15 +2155,20 @@ async function saveUserProgress() {
 
   try {
     if (fbDb) {
-      // Upsert atómico: solo actualiza campos que cambiaron
+      // merge:true — no sobreescribe campos que no enviamos
       await usersCol().doc(username).set(data, { merge: true });
+      console.log('✅ Progreso guardado en Firebase');
     } else {
       const db = lsLoad('im_db') || { users: {} };
-      db.users[username] = { ...db.users[username], ...data };
+      db.users[username] = { ...(db.users[username] || {}), ...data };
       lsSave('im_db', db);
     }
   } catch(e) {
-    console.warn('saveUserProgress error:', e.message);
+    // Respaldo local si falla Firebase
+    console.warn('saveUserProgress Firebase falló, guardando local:', e.message);
+    const db = lsLoad('im_db') || { users: {} };
+    db.users[username] = { ...(db.users[username] || {}), ...data };
+    lsSave('im_db', db);
   }
 }
 
@@ -2176,6 +2223,13 @@ function setAuthLoading(loading) {
     b.disabled = loading;
     b.textContent = loading ? 'Cargando...' : b.dataset.label || b.textContent;
   });
+}
+
+function showPlayModal() {
+  document.getElementById('play-modal').style.display = 'flex';
+}
+function closePlayModal() {
+  document.getElementById('play-modal').style.display = 'none';
 }
 
 function handleAuthBtn() {
@@ -2324,9 +2378,10 @@ function updateProfileUI() {
 }
 
 function goToModes() {
-  // Si no hay usuario, iniciar como invitado automáticamente
+  // Si no hay usuario logueado, mostrar opciones: entrar o jugar como invitado
   if (!currentUser) {
-    playAsGuest();
+    showPlayModal();
+    return;
   }
   showScreen('screen-modes');
 }
