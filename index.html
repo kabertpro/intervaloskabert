@@ -2783,23 +2783,50 @@ function switchLbTab(tab, el) {
   loadLeaderboard();
 }
 
-function loadLeaderboard() {
-  const db = getDB();
-  let scores = [...db.scores];
+async function loadLeaderboard() {
+  const list = document.getElementById('lb-list');
+  list.innerHTML = '<div class="lb-empty">⏳ Cargando ranking...</div>';
 
-  // Filtrar por tab
   const now = Date.now();
   const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const modeLabels = { classic:'Clásico', blitz:'Contrarreloj', challenge:'Desafío', training:'Entrenamiento' };
 
-  if (lbCurrentTab === 'week') {
-    scores = scores.filter(s => now - s.date < weekMs);
-  } else if (lbCurrentTab === 'classic') {
-    scores = scores.filter(s => s.mode === 'classic');
-  } else if (lbCurrentTab === 'blitz') {
-    scores = scores.filter(s => s.mode === 'blitz');
+  let scores = [];
+
+  try {
+    if (fbDb) {
+      // ── Leer de Firebase ──
+      // Una sola query ordenada por score — filtros de modo/semana se aplican en cliente
+      // (evita requerir índices compuestos en Firestore)
+      const snap = await scoresCol()
+        .orderBy('score', 'desc')
+        .limit(500)
+        .get();
+
+      scores = snap.docs.map(d => d.data());
+
+      // Filtros en cliente
+      if (lbCurrentTab === 'week')    scores = scores.filter(s => now - s.date < weekMs);
+      if (lbCurrentTab === 'classic') scores = scores.filter(s => s.mode === 'classic');
+      if (lbCurrentTab === 'blitz')   scores = scores.filter(s => s.mode === 'blitz');
+
+    } else {
+      // ── Fallback localStorage ──
+      const db = lsLoad('im_db') || { scores: [] };
+      scores = [...(db.scores || [])];
+      if (lbCurrentTab === 'week')    scores = scores.filter(s => now - s.date < weekMs);
+      if (lbCurrentTab === 'classic') scores = scores.filter(s => s.mode === 'classic');
+      if (lbCurrentTab === 'blitz')   scores = scores.filter(s => s.mode === 'blitz');
+    }
+
+  } catch(e) {
+    console.warn('loadLeaderboard error:', e.message);
+    // Fallback a local si Firebase falla
+    const db = lsLoad('im_db') || { scores: [] };
+    scores = [...(db.scores || [])];
   }
 
-  // Agrupar por usuario (best score)
+  // Agrupar por usuario — quedarse con el mejor puntaje de cada uno
   const byUser = {};
   scores.forEach(s => {
     if (!byUser[s.username] || s.score > byUser[s.username].score) {
@@ -2807,26 +2834,26 @@ function loadLeaderboard() {
     }
   });
 
-  const sorted = Object.values(byUser).sort((a,b) => b.score - a.score).slice(0, 20);
+  const sorted = Object.values(byUser)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20);
 
-  const list = document.getElementById('lb-list');
   if (!sorted.length) {
     list.innerHTML = '<div class="lb-empty">No hay puntajes todavía.<br>¡Sé el primero!</div>';
     return;
   }
 
   list.innerHTML = sorted.map((s, i) => {
-    const rank = i + 1;
+    const rank      = i + 1;
     const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : 'other';
     const rankEmoji = rank === 1 ? '🥇' : rank === 2 ? '🥈' : rank === 3 ? '🥉' : rank;
-    const isYou = currentUser && s.username === currentUser.username;
-    const modeLabels = { classic:'Clásico',blitz:'Contrarreloj',challenge:'Desafío',training:'Entrenamiento' };
+    const isYou     = currentUser && s.username === currentUser.username;
 
-    return `<div class="lb-row ${isYou?'lb-you':''}" style="animation-delay:${i*0.05}s">
+    return `<div class="lb-row ${isYou ? 'lb-you' : ''}" style="animation-delay:${i*0.05}s">
       <div class="lb-rank ${rankClass}">${rankEmoji}</div>
       <div class="lb-avatar">${s.username[0].toUpperCase()}</div>
       <div class="lb-info">
-        <div class="lb-name">${s.username} ${isYou?'<span class="lb-you-badge">TÚ</span>':''}</div>
+        <div class="lb-name">${s.username} ${isYou ? '<span class="lb-you-badge">TÚ</span>' : ''}</div>
         <div class="lb-level">Nv.${s.level||1} · ${modeLabels[s.mode]||s.mode} · ${s.accuracy||0}% precisión</div>
       </div>
       <div class="lb-score">${s.score}</div>
